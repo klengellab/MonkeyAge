@@ -11,8 +11,6 @@ To use these scripts, first download the AgePrediction folder (including all of 
 
 The script AgePredictionScript.Rmd computes the epigenetic ages of rhesus macaques after you input a MethyLumiSet object containing their DNA methylation.
 
-If unfamiliar with how to create a MethyLumiSet object, use MethylationProcessingScript.Rmd to turn idat files into a MethyLumiSet object. MethylationProcessingScript.Rmd also removes unwanted CpG probes and unwanted blood samples. To run MethylationProcessingScript.Rmd, make sure to create a folder called OutputFolder as a subfolder of the AgePrediction folder. 
+If unfamiliar with how to create a MethyLumiSet object, use MethylationProcessingScript.Rmd to turn idat files into a MethyLumiSet object. MethylationProcessingScript.Rmd also removes unwanted CpG probes and unwanted blood samples.
 
 This repository also contains other files that need to be loaded by AgePredictionScript.Rmd or MethylationProcessingScript.Rmd.
-
-OutputFolder is empty but will contain files that you create if you run MethylationProcessingScript.Rmd.
