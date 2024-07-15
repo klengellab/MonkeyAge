@@ -17,7 +17,7 @@ editor_options:
 
 ## This script uses the methylumi and minfi bioconductor R packages to make a MethyLumiSet object containing methylation measurements for your rhesus macaques. It is this MethyLumiSet object that you then load into the AgePredictionScript.Rmd for predicting epigenetic ages. 
 
-## This script takes idat files measured from the MethylationEPIC microarray and turns them into the MethyLumiSet object, which it saves in "MethyLumiSetFile.RData". This script also filters out unwanted blood samples and CpG sites. It creates various plots (which it saves as PDF files) to allow users to easily see what was done in the filtering steps. All plots and "MethyLumiSetFile.RData" will be found in OutputFolder once you run this script.
+## This script takes idat files measured from the MethylationEPIC microarray and turns them into the MethyLumiSet object, which it saves in "MethyLumiSetFile.RData". This script also filters out unwanted blood samples and CpG sites. It creates various plots (which it saves as PDF files) to allow users to easily see what was done in the filtering steps. All plots and "MethyLumiSetFile.RData" will be found in the AgePrediction folder once you run this script.
 
 ## Note that this script uses a large amount of memory (about 25 GB for 500 blood samples). 
 
@@ -48,7 +48,7 @@ options(stringsAsFactors = FALSE)
 MainFolderPath = "/home/myfolder"  
 ##-------------------------------------------------------------------------------
 
-OutputFolderPath = paste(MainFolderPath, "/AgePrediction/OutputFolder", sep="")
+OutputFolderPath = paste(MainFolderPath, "/AgePrediction", sep="")
 knitr::opts_knit$set(root.dir = OutputFolderPath) 
 set.seed(1)
 options(scipen=999)
