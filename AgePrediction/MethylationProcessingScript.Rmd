@@ -1,0 +1,344 @@
+---
+title: "Processing Rhesus Macaque Data from Human Illumina Infinium MethylationEPIC Microarray"           
+author: "Roy Lardenoije and Gabriel Bronk"
+date: "2024-07-08"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+editor_options: 
+  chunk_output_type: inline
+---
+
+##==============================================================================
+
+## Make sure to read through the comments in this script before running it because some sections require you to modify a bit of the code for your own purposes. 
+
+## This script uses the methylumi and minfi bioconductor R packages to make a MethyLumiSet object containing methylation measurements for your rhesus macaques. It is this MethyLumiSet object that you then load into the AgePredictionScript.Rmd for predicting epigenetic ages. 
+
+## This script takes idat files measured from the MethylationEPIC microarray and turns them into the MethyLumiSet object, which it saves in "MethyLumiSetFile.RData". This script also filters out unwanted blood samples and CpG sites. It creates various plots (which it saves as PDF files) to allow users to easily see what was done in the filtering steps. All plots and "MethyLumiSetFile.RData" will be found in OutputFolder once you run this script.
+
+## Note that this script uses a large amount of memory (about 25 GB for 500 blood samples). 
+
+
+
+## More info:
+
+## Since the MethylationEPIC microarray was designed for humans, the CpG probes are first mapped to the rhesus macaque genome to determine which are conserved between humans and rhesus macaques, following the procedure described by [Needhamsen et al. (2017)](https://dx.doi.org/10.1186%2Fs12859-017-1870-y), and adapted for rhesus macaques (documented in the [needhamsen2017-pipeline.sh](https://gitlab.partners.org/klengellab/methylationepic-general/-/blob/27064888f352e3ff163896b6edb5345471536be5/needhamsen2017-pipeline.sh) script on GitLab).
+
+## Following the mapping of the rhesus macaque CpG probes, additional filtering of the CpG probes and blood samples is performed with a combination of the following Bioconductor R packages: [wateRmelon](https://bioconductor.org/packages/release/bioc/vignettes/wateRmelon/inst/doc/wateRmelon.pdf)  [minfi](https://bioconductor.org/packages/release/bioc/vignettes/minfi/inst/doc/minfi.html#3_reading_data) and [ChAMP](https://www.bioconductor.org/packages/devel/bioc/vignettes/ChAMP/inst/doc/ChAMP.html) .
+
+
+##==============================================================================
+
+
+## Set your file path:
+
+```{r setup, cache=FALSE, message=FALSE, warning=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+options(stringsAsFactors = FALSE)
+
+##------------------------------------------------------------------------------
+## First, download the AgePrediction folder (including all of its files and subfolders), and put the AgePrediction folder into your chosen location on your computer or computer cluster. As an example, we refer to your chosen location as "/home/myfolder", and so the AgePrediction folder would be a subfolder of myfolder.
+
+## Now set your folder path for where you put the AgePrediction folder: 
+## (again, "/home/myfolder" is just an example).
+MainFolderPath = "/home/myfolder"  
+##-------------------------------------------------------------------------------
+
+OutputFolderPath = paste(MainFolderPath, "/AgePrediction/OutputFolder", sep="")
+knitr::opts_knit$set(root.dir = OutputFolderPath) 
+set.seed(1)
+options(scipen=999)
+
+```
+
+
+## Loading packages (Make sure to install these packages):
+
+```{r}
+
+library(openxlsx)    ## This is a CRAN package
+library(dplyr)       ## This is a CRAN package
+library(wateRmelon)  ## This is a Bioconductor package
+library(knitr)       ## This is a CRAN package
+library(kableExtra)  ## This is a CRAN package
+library(irlba)       ## This is a CRAN package
+library(Hmisc)       ## This is a CRAN package
+library(Rmisc)       ## This is a CRAN package
+library(pheatmap)    ## This is a CRAN package
+library(minfi)       ## This is a Bioconductor package
+
+```
+
+
+## This section sources other scripts that are used by this main proecessing script:
+
+```{r}
+
+FunctionsFolderPath = paste(MainFolderPath, "/AgePrediction/Functions", sep="")
+setwd(FunctionsFolderPath)
+
+source("predictSex2.R") 
+## This modified version of the wateRmelon package's predictSex() function also makes a plot colored by reported sex.
+source("custom.QC.R") 
+## A modified version of the ChAMP package's champ.QC() function with better plots.
+source("mdsPlot2.R") 
+## A modified version of mdsPlot() from the minfi package with better control of the legend placement.
+
+```
+
+
+## Set paths for your files and folders:
+
+```{r}
+
+## These paths are just examples - set your own paths:
+
+## dataDirectory is the path for the folder containing the idat files (in this example, IdatFolder is the name of the folder that contains the idat files):
+dataDirectory = "/home/myfolder/IdatFolder"
+  
+## The sampleSheet is a .csv file that contains the positions of all your samples in the microarray (each row is for a different sample). We provide SampleSheetExample.csv as an example of what your sampleSheet should look like (we only showed 10 samples in this example). Make sure to load up your own sampleSheet.
+sampleSheet = "/home/myfolder/SampleSheetExample.csv"
+  
+## phenoFile is a .xlsx spreadsheet containing phenotype information for your rhesus macaques, including age, sex and whatever else is of interest to you (each row is for a different sample). You must have sex information if you want to use the module in this script that verifies samples based on their sex (see the 3rd to last module in this script) - include the sexes, writing them as Female or Male (the sexes need to be capitalized). We provide PhenoFileExample.xlsx as an example of what your phenoFile should look like. Make sure to load up your own phenoFile.
+phenoFile = "/home/myfolder/PhenoFileExample.xlsx"
+  
+## This is the annotation file for rhesus macaques (you don't need to edit this file path):
+rhesusAnnotationFile = paste(MainFolderPath, "/AgePrediction/rhe-rheMac10-annotated-probes-v5.bed", sep="")
+
+
+```
+
+
+
+## Loading the sample sheet and phenotype data:
+
+```{r load-data}
+
+## If your sampleSheet uses different column headings than ours does, then modify this module accordingly:
+
+##------------------------------------------------------------------------------
+
+## Reading in the sample sheet:
+targets = read.csv(sampleSheet)
+## Constructing basename column:
+targets$Basename = paste0(targets$Sentrix_ID, "_", targets$Sentrix_Position)
+
+# Setting rownames (so they are the same as the MethylationEPIC data):
+rownames(targets) = targets$Basename
+
+## Loading the phenotype data:
+pheno = read.xlsx(phenoFile, sheet = 1)
+
+##------------------------------------------------------------------------------
+## This section combines the sample sheet with the phenotype information to form one data frame. These lines of code are specific to the data in Bronk et al. Therefore, you should edit this according to the names of the columns for your sample sheet and phenotype information
+
+# This selects only the samples for which we have both methylation data and phenotype information: 
+targets <- targets[targets$Sample_Name %in% pheno$Animal,]
+
+# This merges the sample sheet with the phenotype information to create a data frame called pd. We wrote the names of the columns that we wanted to include in pd (so you need to write differen column names here if your sampleSheet has different headings):
+pd <- distinct(merge(x = targets[, c("Sample_Name", "Sentrix_ID", "Sentrix_Position", "Basename",
+                                     "Sample_Well", "Sample_Plate")],
+                     y = pheno, by.x = "Sample_Name", by.y = "Sample_Name"))
+
+rownames(pd) <- pd$Basename
+
+pd$Sentrix_ID <- as.factor(pd$Sentrix_ID)
+pd$Sentrix_Position <- as.factor(pd$Sentrix_Position)
+pd$Sample_Well <- as.factor(pd$Sample_Well)
+pd$Sample_Plate <- as.factor(pd$Sample_Plate)
+pd$Sex <- as.factor(pd$Sex)
+
+##------------------------------------------------------------------------------
+
+# Loading annotation file:
+annot <- read.delim(rhesusAnnotationFile)
+rownames(annot) <- annot$name
+
+```
+
+
+## Putting together the idat files measured from the MethylationEPIC microarray to create a MethyLumiSet object and an RGChannelSet object: 
+
+```{r read-idat}
+
+mlumi <- readEPIC(idatPath = dataDirectory,
+                  barcodes = pd$Basename,
+                  n = TRUE, # for beadcounts
+                  oob = TRUE) # for out-of-bands signals
+
+rgSet <- read.metharray.exp(base = dataDirectory,
+                            targets = pd, extended = TRUE, verbose = TRUE)
+
+message("Dimensions of RGset: ")
+dim(rgSet)
+
+```
+
+
+## Selecting only probes successfully and uniquely mapped to the rhesus macaque genome, with no mismatches within 5 bp of the target site:
+
+```{r}
+
+rgSetRhesusMacaque <- subsetByLoci(rgSet, includeLoci = rownames(annot))  ##################### rename
+
+```
+
+
+## Filtering of samples based on bisulfite conversion:
+
+## The [*wateRmelon*](https://bioconductor.org/packages/release/bioc/vignettes/wateRmelon/inst/doc/wateRmelon.pdf) package vignette recommends as lowest threshold 80%. A more stringent threshold (e.g. 90% is commonly used) may be desirable, but this would lead to the exclusion of many more samples.
+
+```{r bscon}
+
+BSCHistogramFilePath = paste(OutputFolderPath, "/BisulfiteConversionHistogram.pdf", sep="")
+
+bsc <- bscon(rgSetRhesusMacaque)
+
+pdf(file = BSCHistogramFilePath,   # The directory you want to save the file in
+    width = 4, # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+hist(bsc, col = rainbow(1))
+abline(v = 80, col = "green")
+## Run dev.off() to create the PDF file:
+dev.off()
+
+
+## Here we chose to only include samples in our analysis if they achieved a bisulfite conversion rate of greater than 80% (any samples with a less than 80% conversion rate were excluded from future analysis):
+rgSetFiltered <- rgSetRhesusMacaque[, bsc > 80]
+pd <- pd[colnames(rgSetFiltered),]
+
+
+print(dim(rgSetFiltered))
+
+```
+
+
+## Filtering of CpG probes and blood samples based on detection p-value and beadcount:
+
+```{r pfilter, message=TRUE}
+
+PValuePlotFilePath  = paste(OutputFolderPath, "/PValuePlot.pdf", sep="")
+
+ArrayForBarPlot = colMeans(detectionP(rgSetFiltered))
+
+pdf(file = PValuePlotFilePath,   # The directory you want to save the file in
+    width = 4, # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+barplot(ArrayForBarPlot, ylab = "mean detection p-value",
+        main = "mean detection p-value before filtering", names.arg = pd$Basename,
+        cex.names = 0.5, ylim = c(0, 0.1))
+abline(h = 0.05, col = "red")
+## Run dev.off() to create the PDF file:
+dev.off()
+
+
+rgSetFiltered <- pfilter(rgSetFiltered,
+                      perCount = 5, # percentage threshold of samples with beadcount < 3
+                      pnthresh = 0.05, # threshold for detection p-value
+                      perc = 5, # percentage threshold of probes with detection p > pntthresh, default is 1
+                      pthresh = 5) # percentage threshold of samples with detection p > pnthresh, default is 1
+  print("pfilter")
+  print(dim(rgSetFiltered))
+
+  
+PValueFilteringPlotFilePath = paste(OutputFolderPath, "/PValueFilteringPlot.pdf", sep="")
+
+pdf(file = PValueFilteringPlotFilePath,   # The directory you want to save the file in
+    width = 4, # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+
+ArrayForFilteredBarPlot = colMeans(detectionP(rgSetFiltered))
+NamesArg = pd[colnames(rgSetFiltered), "Basename"]
+
+barplot(ArrayForFilteredBarPlot, ylab = "mean detection p-value",
+        main = "mean detection p-value after filtering", 
+        names.arg = NamesArg,
+        cex.names = 0.5, ylim = c(0, 0.1))
+abline(h = 0.05, col = "red")
+## Run dev.off() to create the PDF file:
+dev.off()
+
+pd <- pd[colnames(rgSetFiltered),]
+ 
+print(dim(rgSetFiltered))
+
+```
+
+
+## Removing outlier blood samples using the outlyx function:
+
+## Outlier detection based on 2 outlier detection methods, part of the [wateRmelon](https://bioconductor.org/packages/release/bioc/vignettes/wateRmelon/inst/doc/wateRmelon.pdf) package. Identify outliers based on > 2 interquartile ranges from the first principal component, and based on the [`pcout`](https://www.rdocumentation.org/packages/mvoutlier/versions/2.0.9/topics/pcout) function. From the documentation: This function uses robustly sphered data to compute semi-robust principal components, used for determining distances for each observation. Separate weights for location and scatter outliers are computed based on these distances. The combined weights are used for outlier identification.
+
+```{r outlyx}
+
+OutliersPlotFilePath = paste(OutputFolderPath, "/OutliersPlot.pdf", sep="")
+
+pdf(file = OutliersPlotFilePath,   # The directory you want to save the file in
+    width = 4, # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+outliers <- outlyx(rgSetFiltered, iqr = TRUE, iqrP = 2, pc = 1, mv = TRUE, mvP = 0.15, plot = TRUE)
+dev.off()
+
+if(sum(outliers$outliers) > 0){
+    pd <- pd[!outliers$outliers,]
+    rgSetFiltered <- rgSetFiltered[, rownames(pd)]
+}
+
+print(dim(rgSetFiltered))
+
+```
+
+
+## Here we use x-chromosome methylation to accurately predict the sex of each individual.
+## If a sample is predicted to be a sex different from the sex that the sample was labeled with, then you know that there was a mix-up and that sample is actually from a different individual, so you should discard that sample.
+
+```{r sex-prediction, message=FALSE, warning=FALSE}
+
+SexPlotFilePath = paste(OutputFolderPath, "/SexPlot.pdf", sep="")  
+
+xbetas <- getBeta(rgSetFiltered)
+xbetas <- xbetas[rownames(xbetas) %in% rownames(annot[annot$chrom == "chrX",]),]
+
+pdf(file = SexPlotFilePath,   # The directory you want to save the file in
+    width = 4, # The width of the plot in inches
+    height = 4) # The height of the plot in inches
+pd$pred.sex <- predictSex2(xbetas, reported.sex = pd$Sex, sampNames = pd$Sample_Name, axis.scale = 1)
+dev.off()
+
+
+IndicesToKeepForSex = which(pd$Sex == as.factor(pd$pred.sex))
+pd <- pd[IndicesToKeepForSex,]
+rgSetFiltered <- rgSetFiltered[, rownames(pd)]
+
+
+print(dim(rgSetFiltered))
+
+```
+
+
+## Here we exclude all CpG probes that map to the X or Y chromosomes:
+
+```{r unused-probes-filtering}
+
+  XYprobes <- rownames(annot[grepl("chrX|chrY", annot$chrom),])
+  rgSetFiltered <- subsetByLoci(rgSetFiltered, excludeLoci = XYprobes)
+ 
+
+```
+
+
+## Now we convert the RGChannelSet object to a MethyLumiSet object:
+
+```{r save-filtered-data}
+
+  BetaObject <- getBeta(rgSetFiltered)
+  YourMethyLumiSet <- mlumi[rownames(BetaObject), colnames(BetaObject)]
+
+  save(YourMethyLumiSet, pd, file = "MethyLumiSetFile.RData")
+
+```
+

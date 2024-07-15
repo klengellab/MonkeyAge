@@ -1,0 +1,179 @@
+---
+title: "Age Prediction Script"
+author: "Gabriel Bronk"
+date: "2024-07-08"
+output: html_document
+---
+
+##==============================================================================
+
+## Script for Calculating the Epigenetic Age of Rhesus Macaques
+
+## From "A novel epigenetic clock for rhesus macaques unveils 
+## an association between early life adversity and epigenetic age acceleration"
+## by Bronk et al. 2024.
+
+## Prior to running this script, make sure to follow steps 1-4 listed below.
+## When run on a computer cluster, this script takes about a minute to run for 
+## every 20 blood samples you have (because normalization takes time).
+## When finished, the script produces an array of epigenetic ages called PredictedAges.
+
+##==============================================================================
+
+
+
+## STEP 1: Set the path for the "AgePrediction" folder
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+##------------------------------------------------------------------------------
+## First, download the AgePrediction folder (including all of its files and subfolders), and put the AgePrediction folder into your chosen location on your computer or computer cluster. As an example, we refer to your chosen location as "/home/myfolder", and so the AgePrediction folder would be a subfolder of myfolder.
+
+## Now set your folder path for where you put the AgePrediction folder: 
+## (again, "/home/myfolder" is just an example).
+MainFolderPath = "/home/myfolder"  
+##-------------------------------------------------------------------------------
+
+## You don't need to edit this:
+AgePredictionFolderPath = paste(MainFolderPath, "/AgePrediction", sep="")
+knitr::opts_knit$set(root.dir = AgePredictionFolderPath)
+
+```
+
+
+## STEP 2: Load the libraries (Make sure to install these libraries before running this script) 
+
+```{r}
+
+library("glmnet")     ## This is a CRAN package.
+library('methylumi')  ## This is a Bioconductor package.
+library('dplyr')      ## This is a CRAN package.
+library("knitr")      ## This is a CRAN package.
+library("utils")      ## This is a CRAN package.
+library("minfi")      ## This is a Bioconductor package.
+library("wateRmelon") ## This is a Bioconductor package.
+
+```
+
+
+## STEP 3: Loading your data
+
+```{r}
+## Here you need to supply your own file called MethyLumiSetFile.RData containing an object called YourMethyLumiSet, which is a MethyLumiSet object containing methylation measurements for your rhesus macaques. The dimensions of YourMethyLumiSet are N by S, where N is the number of CpGs and S is the number of blood samples. (MethyLumiSet objects are created by the methylumi bioconductor R package by feeding in idat files measured from the MethylationEPIC microarray. If you are unfamiliar with the steps to process idat files and filter out unwanted samples and CpG probes, use our script MethylationProcessingScript.Rmd, which will create the object YourMethylumiSet for you).
+
+load('MethyLumiSetFile.RData')
+
+```
+
+
+## STEP 4: Select whether you want to make predictions using the Epigenetic Clock for Rhesus Macaques or the Epigenetic Clock for Young Rhesus Macaques.
+
+```{r}
+
+## Set ClockOption = 1 if you want to make predictions using the Epigenetic Clock for Rhesus Macaques (ECRM). 
+## Set ClockOption = 2 if you want to make predictions using the Epigenetic Clock for Young Rhesus Macaques (ECYRM). 
+
+ClockOption = 1 
+
+```
+
+
+
+##==============================================================================
+## You do not have to input anything beyond this point.
+##==============================================================================
+
+
+
+
+## Loading files necessary to run this script:
+
+```{r}
+
+load('ObjectsNeededForAgePrediction.RData')
+## This loads the following objects: ReliableCpGProbes, MeanArrayFromBronkData, CpGsForRhesusMacaqueIndividual
+
+```
+
+
+## This loads functions needed for this script:
+
+```{r}
+
+## This is the function that imputes missing data if any CpG beta values are missing from any of your samples. If a CpG's value is missing, this function performs mean imputation by taking the mean value of that CpG in Bronk et al.'s data set and using that mean value to replace the missing data point in your sample.
+
+## For the following function, the input x is a dataframe with CpGs as the rows and samples as the columns. The input meanarray is a vector with the mean methylation value for each CpG in Bronk et al.'s dataset.
+
+MeanImputeBasedOnTrainingData <- function(x, meanarray){
+  NumberOfRowsInX = dim(x)[1]
+  for (RowNumber in 1:NumberOfRowsInX) {
+    x[RowNumber,] = ifelse(is.na(x[RowNumber,]),meanarray[RowNumber],x[RowNumber,])
+  }
+  return(x)
+}
+
+
+##==============================================================================
+
+## This is a function for normalization of the methylation data. It is a modified version of the waterMelon::BMIQ function that is reproducible (has a fixed random seed value).
+
+source("Functions/reproducibleBMIQ.R") 
+
+```
+
+
+## This normalizes your methylation data:
+
+```{r}
+
+## First we reformat YourMethyLumiSet to have the same number of rows (i.e. number of CpGs) as the data used in Bronk et al. We do so using the "combo" function, which matches the rows of YourMethyLumiSet with the rows of one of the rhesus macaques from Bronk et al. (the object CpGsForRhesusMacaqueIndividual): 
+MethyLumiObjectOne = combo(CpGsForRhesusMacaqueIndividual, YourMethyLumiSet)
+
+## Next we narrow down your data to only the CpG sites that we found to be reliable:
+MethyLumiObjectTwo = MethyLumiObjectOne[ReliableCpGProbes,-1]
+
+## Next we normalize the methylation data and obtain the methylation beta values:
+NormalizedData = reproducibleBMIQ(normalizeMethylation.quantile(MethyLumiObjectTwo))
+MethylationBetaValues = betas(NormalizedData)
+
+```
+
+
+## This imputes missing data for any of your samples that are missing any CpG measurements. (If there is no missing data, then this function will not change your data at all).
+
+```{r}
+
+MethylationBetaValuesWithImputation = MeanImputeBasedOnTrainingData(MethylationBetaValues, MeanArrayFromBronkData)
+
+```
+
+
+## This predicts the ages of your rhesus macaques using our epigenetic clocks ECRM or ECYRM:
+
+```{r}
+
+if (ClockOption == 1) {
+
+  InterceptAndIndices = ECRM@i   
+  Indices = InterceptAndIndices[-1]
+  InterceptAndCoefficients = ECRM@x
+  Coefficients = InterceptAndCoefficients[-1]
+  Intercept = InterceptAndCoefficients[1]
+  
+  PredictedAges = Intercept + Coefficients%*%MethylationBetaValuesWithImputation[Indices,]
+ 
+} else if (ClockOption == 2) { 
+
+  InterceptAndIndices = ECYRM@i   
+  Indices = InterceptAndIndices[-1]
+  InterceptAndCoefficients = ECYRM@x
+  Coefficients = InterceptAndCoefficients[-1]
+  Intercept = InterceptAndCoefficients[1]
+  
+  PredictedAges = Intercept + Coefficients%*%MethylationBetaValuesWithImputation[Indices,]
+  
+}
+
+```
+
